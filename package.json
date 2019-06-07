@@ -1,0 +1,16 @@
+{
+  "name": "ext_spf_dmarc",
+  "version": "1.0.0",
+  "description": "For extracting the SPF and DMARC records for a particular domain.",
+  "main": "server.js",
+  "scripts": {
+    "test": "mocha"
+  },
+  "author": "Parveen Sahrawat",
+  "license": "ISC",
+  "dependencies": {
+    "ip-cidr": "^2.0.2",
+    "should": "^13.2.3",
+    "tldjs": "^2.3.1"
+  }
+}
