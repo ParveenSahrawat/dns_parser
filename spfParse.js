@@ -37,7 +37,7 @@ const _validateDomain = (domain) => {
         let pubSufLen = parsedDomain.publicSuffix.split('.').length;
         let domainName = parsedDomain.domain.split('.')[parsedDomain.domain.split('.').length - pubSufLen - 1];
         if(domainName.length > 63) {
-            console.error("DOmain length is greater than 63 characters.");
+            console.error("Domain length is greater than 63 characters.");
         }
     }
 }
@@ -83,7 +83,8 @@ const _parseSPFRecord = (domainName) => {
                     txtRecords = [...spf.split(' ')];
 
                     // spf record last element should be one of below mechanisms or modifiers
-                    const mechanismsOrModifiers = ['-all', '+all', '?all', '~all', 'redirect', 'exp'];
+                    const mechanismsOrModifiers = ['-all', '+all', '?all', '~all', 'redirect'];
+                    // console.log(` Last element is ${txtRecords[txtRecords.length - 1]}`);
                     if(mechanismsOrModifiers.indexOf(txtRecords[txtRecords.length - 1])) {
 
                     }
