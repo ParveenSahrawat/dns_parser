@@ -1,8 +1,19 @@
 'use strict'
-
+var Promise = require('bluebird');
 const dns = require('dns');
 const IPCIDR = require('ip-cidr');
 const { parse } = require('tldjs');
+const pify = require('pify');
+
+const resultsCodes = {
+    spfCount : 1000, // if spf count is greater then 1
+    domainInvalid : 1001, // if domain is invalid
+    domainLength : 1002, // if domain length is greater than 63 characters
+    domainNotFound : 1003, // if domain is not found 
+    voidLookUp : 1004, // if void lookup count is exceeded 2
+    dnsLookUp : 1005, // if dns lookup count has been exceeded 10
+    itemAfterAll : 1006, // if items are present after all mechanism
+}
 const queryResults = {
     none : 'none',
     neutral : 'neutral',
@@ -15,8 +26,9 @@ const queryResults = {
     permError : 'permerror', //
 }
 var dnsLookUpCount = 0;
-
+var voidLookUpCount = 0;
 var results = [];
+var domainGlobal = 'flipkart.com';
 
 const _parseIPRecord = (ip_address) => {
     let range = new IPCIDR(`${ip_address}`).toRange();
@@ -29,24 +41,37 @@ const _validateDomain = (domain) => {
     if(parsedDomain.isValid) {
         _parseSPFRecord(parsedDomain.domain);
     } else {
-        results.push({error : 'Domain is invalid'});
+        results.push({ domain : domain, errorCode : resultsCodes.domainInvalid, description : 'Domain is invalid', });
     }
     if(parsedDomain.domain !== null){
         let pubSufLen = parsedDomain.publicSuffix.split('.').length;
-        let domainName = parsedDomain.domain.split('.')[parsedDomain.domain.split('.').length - (pubSufLen + 1)];
-        if(domainName.length > 63) {
+        // let domainName = parsedDomain.domain.split('.')[parsedDomain.domain.split('.').length - (pubSufLen + 1)];
+        if( (domain.length - (pubSufLen + 1)) > 63) {
+            results.push({domain : domain, errorCode : resultsCodes.domainLength, description : 'Domain lenght is greater than 63 characters.'});
             console.error("Domain length is greater than 63 characters.");
         }
     }
+    console.log(results);
 }
-
+// var spfDNSRecord = []; // for record of data to be collected after spf evaluation
 const _parseSPFRecord = (domain) => {
     const domainName = domain;
     
     dns.resolveTxt(`${domainName}`, (err, records) => {
         if(err) {
-            console.error(err);
+            if(err.code === 'ENOTFOUND') {
+                voidLookUpCount++;
+            }
+            results.push({domain : domainName, errorCode : resultsCodes.domainNotFound, description : 'Domain not found.'});
+            console.log(results);
+            console.log(`Void lookups are ${voidLookUpCount}`);
         } else {
+            if(records.length === 0) {
+                voidLookUpCount++;
+            }
+            if(voidLookUpCount > 2) {
+                results.push({ domain : domainName, voidLookUps : voidLookUpCount, warningCode : resultsCodes.voidLookUp, warning : 'Number of void lookups has been exceeded 2.' });
+            }
             var txtRecords;
             console.log(`Records length is ${records.length}`);
             // get spf record if available and there exists only one spf record
@@ -69,7 +94,7 @@ const _parseSPFRecord = (domain) => {
             });
 
             if(spfCount === 1) {
-                if(spf.length > 513 ) {
+                if(spf.length > 512 ) {
                     results.push({ domain : domainName, warning : 'The length of the spf record is exceeded 512 characters'});
                 }
                 txtRecords = [...spf.split(' ')];
@@ -104,52 +129,62 @@ const _parseSPFRecord = (domain) => {
                         let existsOptions = ['exists', '-exists', '+exists', '~exists', '?exists'];
                         let includeOptions = ['include', '-include', '+include', '~include', '?include']
 
-                        let spfDNSRecord = []; // record of data to be collected after spf evaluation
+                        var spfDNSRecord = []; // for record of data to be collected after spf evaluation
 
                         for( let i = 0; i < txtRecords.length; i++ ) {
-                            // if(dnsLookUpCount > 10) { // when dns lookups exceeded 10
-                            //     results.push({permError : queryResults.permError, description : 'DNS lookups has been exceeded 10'});
-                            //     console.log(spfDNSRecord);
-                            //     console.log(results);
-                            //     break;
-                            // }
+                            if(dnsLookUpCount > 10) { // when dns lookups exceeded 10
+                                results.push({permError : queryResults.permError, errorCode : resultsCodes.dnsLookUp, description : 'DNS lookups has been exceeded 10'});
+                                console.log(spfDNSRecord);
+                                console.log(results);
+                                break;
+                            }
                             
                             let type = txtRecords[i];
                             if( (aOptions.indexOf(type) > -1) || (aOptions.indexOf(type.split(':')[0]) > -1) || (aOptions.indexOf(type.split('/')[0]) > -1) ) {
-                                dnsLookUpCount++;
-                                console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                 let aRecord = new Promise((resolve, reject) => {
                                     dns.resolve4(domain, (err, record) => {
+                                        dnsLookUpCount++;
+                                        console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                         err ? reject(err) : resolve(record);
                                     });
                                 });
                                 aRecord.then((record) => {
-                                    spfDNSRecord.push({ type : 'A', address : record[0] });
+                                    if(record.length === 0) {
+                                        voidLookUpCount++;
+                                    } 
+                                    spfDNSRecord.push({ type : 'A', addresses : [...record] });
                                 }).catch((err) => {
                                     results.push({error : err});
                                 });
                             } else if( (aaaaOptions.indexOf(type) > -1) || (aaaaOptions.indexOf(type.split(':')[0]) > -1) || (aOptions.indexOf(type.split('/')[0]) > -1) ) { 
-                                dnsLookUpCount++;
-                                console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                 let aaaaRecord = new Promise((resolve, reject) => {
                                     dns.resolve6(doamin, (err, record) => {
+                                        dnsLookUpCount++;
+                                        console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                         err ? reject(err) : resolve(record);
                                     });
                                 });
                                 aaaaRecord.then(record => {
-                                    spfDNSRecord.push({ type : 'AAAA', address : record[0] });
+                                    if(aaaaRecord.length === 0) {
+                                        voidLookUpCount++;
+                                    }
+                                    spfDNSRecord.push({ type : 'AAAA', addresses : [...record] });
                                 }).catch(err => {
                                     results.push({error : err});
                                 });
                             } else if( (mxOptions.indexOf(type) > -1) || (mxOptions.indexOf(type.split(':')[0]) > -1) || (mxOptions.indexOf(type.split('/')[0]) > -1) ) {
-                                dnsLookUpCount++;
+                                
                                 console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                 let mxRecord = new Promise((resolve, reject) => {
                                     dns.resolveMx(domain, (err, record) => {
+                                        dnsLookUpCount++;
                                         err ? reject(err) : resolve(record);
                                     });
                                 });
                                 mxRecord.then(record => {
+                                    if(mxRecord === 0) {
+                                        voidLookUpCount++;
+                                    }
                                     spfDNSRecord.push({ type : 'MX', domains : [...record] });
                                     record.map((item) => {
                                         let mailServerIpv4 = new Promise((resolve, reject) => {
@@ -165,12 +200,12 @@ const _parseSPFRecord = (domain) => {
                                             });
                                         });
                                         mailServerIpv4.then(data => {
-                                            spfDNSRecord.push({mailServer : item.exchange , ip : data.exchange});
+                                            spfDNSRecord.push({mailServer : item.exchange , ip : [...data]});
                                         }).catch(err => {
                                             results.push({error : err, description : 'Error in resolving mail server address.'});
                                         });
                                         mailServerIpv6.then(data => {
-                                            spfDNSRecord.push({mailServer : item.exchange , ip : data.exchange});
+                                            spfDNSRecord.push({mailServer : item.exchange , ip : [...data]});
                                         }).catch(err => {
                                             results.push({error : err, description : 'Error in resolving mail server address.'});
                                         });
@@ -179,26 +214,48 @@ const _parseSPFRecord = (domain) => {
                                     results.push({ error : err});
                                 });
                             } else if( (ptrOptions.indexOf(type) > -1) || (ptrOptions.indexOf(type.split(':')[0]) > -1) || (ptrOptions.indexOf(type.split('/')[0]) > -1) ) {
-                                dnsLookUpCount++;
-                                console.log(`DNS lookups done are ${dnsLookUpCount}`);
-                                results.push({ domain : domainName, warning : 'PTR records are found.'});
+                                
+                                results.push({ domain : domainName, warning : 'PTR mechanism is found.'});
                                 let ptrRecord = new Promise((resolve, reject) => {
                                     dns.resolvePtr(domain, (err, record) => {
+                                        dnsLookUpCount++;
+                                        console.log(`DNS lookups done are ${dnsLookUpCount}`);
                                         err ? reject(err) : resolve(record);
                                     });
                                 });
                                 ptrRecord.then(record => {
-                                    spfDNSRecord.push({ type : 'PTR', record : record });
+                                    if(record.length === 0) {
+                                        voidLookUpCount++;
+                                    }
+                                    spfDNSRecord.push({ type : 'PTR', record : [...record] });
                                 }).catch(err => {
-                                    results.push({error : err});
+                                    results.push({err});
                                 });
                             } else if( (existsOptions.indexOf(type.split(':')[0]) > -1) || (existsOptions.indexOf(type.split('/')[0]) > -1) ) {
                                 // a dns lookup will increase here
+                                // a void lookup can increase here
                                 console.log('\n Exists Exists \n');
+                                let domain = type.split(':')[1] || type.split('/')[1];
+                                let aRecord = new Promise((resolve, reject) => {
+                                    dns.resolve4(domain, (err, record) => {
+                                        err ? reject(err) : resolve(record);
+                                    });
+                                });
+                                aRecord.then((record) => {
+                                    if(record.length === 0) {
+                                        voidLookUpCount++;
+                                    } 
+                                    spfDNSRecord.push({ type : 'exists', address : [...record] });
+                                }).catch((err) => {
+                                    results.push({error : err});
+                                });
                             } else if( (includeOptions.indexOf(type.split(':')[0]) > -1) || (includeOptions.indexOf(type.split('/')[0]) > -1) ) {
                                 dnsLookUpCount++;
                                 console.log(`DNS lookups done are ${dnsLookUpCount}`);
-                                    _parseSPFRecord(type.split(':')[1] || type.split('/')[1]);
+                                // spfDNSRecord.push(_parseSPFRecord(type.split(':')[1] || type.split('/')[1]));
+                                pify(_parseSPFRecord)(type.split(':')[1] || type.split('/')[1]).then((data) => {
+                                    spfDNSRecord.push({type : 'include', domain: type.split(':')[1] || type.split('/')[1], data : [...data]});
+                                });
                             } else if( (ip4Options.indexOf(type.split(':')[0]) > -1 ) || (ip4Options.indexOf(type.split('/')[0]) > -1 ) ){
                                 if(type.split('/')[1] || type.split('/')[2]) {
                                     spfDNSRecord.push(_parseIPRecord(type.split(':')[1]) || _parseIPRecord(type.split('/')[1]));
@@ -214,15 +271,22 @@ const _parseSPFRecord = (domain) => {
                                     spfDNSRecord.push(_parseIPRecord(type.substring(type.split(':')[0].length + 1) + '/128') || _parseIPRecord(type.substring(type.split(':')[0].length + 1) + '/128'));
                                 }
                             } else if(type.split('=') === 'redirect') {
+
                                 console.log('Redirect is present');
+                                
                             } else if (allOptions.indexOf(type) > -1 ) {
                                 if( i !== (txtRecords.length -1) ) {
-                                    results.push({error : queryResults.tempError, description : 'Items present after all mechanism.'})
+                                    results.push({error : queryResults.tempError, errorCode : resultsCodes.itemAfterAll, description : 'Items present after all mechanism.'})
                                 }
                                 console.log(spfDNSRecord);
                                 results.length > 1 ? console.log(results) : console.log(`No errors`);
                                 console.log(`DNS lookups done are ${dnsLookUpCount}.`);
-                                break;
+                                console.log(`Void lookups are ${voidLookUpCount}`);
+                                if(domainName === domainGlobal) {
+                                    break;
+                                } else {
+                                    return spfDNSRecord;
+                                }
                             }
                         }
                     } else {
@@ -235,10 +299,24 @@ const _parseSPFRecord = (domain) => {
                 }
             } else {
                 console.log(`spf count is ${spfCount}`);
-                results.push({ domain : domainName, warning : 'SPF count is more than 1.' });
+                results.push({ domain : domainName, errorCode : resultsCodes.spfCount, warning : 'SPF count is more than 1.' });
             }
         }
     });
 }
 
-_validateDomain('paavu.com');
+_validateDomain(`${domainGlobal}`);
+
+// dns.resolveMx('paavu.com', (err, result) => {
+//     err ? console.error(err) : console.log(result);
+// });
+// // [
+// //     { exchange: 'alt2.aspmx.l.google.com', priority: 5 },
+// //     { exchange: 'alt4.aspmx.l.google.com', priority: 10 },
+// //     { exchange: 'aspmx.l.google.com', priority: 1 },
+// //     { exchange: 'alt1.aspmx.l.google.com', priority: 5 },
+// //     { exchange: 'alt3.aspmx.l.google.com', priority: 10 }
+// //   ]
+// dns.resolve6(`${%{i}._spf.mta.salesforce.com}`, (err, result) => {
+//     err ? console.error(err) : console.log(result);
+// });

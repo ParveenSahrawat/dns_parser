@@ -9,7 +9,9 @@
   "author": "Parveen Sahrawat",
   "license": "ISC",
   "dependencies": {
+    "bluebird": "^3.5.5",
     "ip-cidr": "^2.0.2",
+    "pify": "^4.0.1",
     "should": "^13.2.3",
     "tldjs": "^2.3.1"
   }
